@@ -4,6 +4,11 @@ import logging
 import platform
 import socket
 import bluetooth  # Klasszikus Bluetooth támogatáshoz
+import subprocess
+import re
+import time
+import netifaces  # pip install netifaces
+import nmap  # pip install python-nmap
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -61,6 +66,234 @@ async def ble_connect_with_retry(address, max_attempts=3):
                 print("Újrapróbálkozás 5 másodperc múlva...")
                 await asyncio.sleep(5)
     return None
+
+def get_android_hotspot_info():
+    try:
+        # Windows esetén
+        if platform.system() == "Windows":
+            result = subprocess.check_output(["netsh", "wlan", "show", "interfaces"], encoding='utf-8')
+            
+            # Részletes információk gyűjtése
+            connection_info = {
+                'ssid': None,
+                'signal': None,
+                'ip': None,
+                'gateway': None,
+                'dns': None,
+                'frequency': None,
+                'tx_rate': None,
+                'rx_rate': None
+            }
+            
+            # SSID és jelerősség kinyerése
+            for line in result.split('\n'):
+                if "SSID" in line and "BSSID" not in line:
+                    connection_info['ssid'] = line.split(":")[1].strip()
+                elif "Signal" in line:
+                    signal_str = line.split(":")[1].strip().rstrip('%')
+                    connection_info['signal'] = int(signal_str) if signal_str.isdigit() else None
+                elif "Receive rate" in line:
+                    connection_info['rx_rate'] = line.split(":")[1].strip()
+                elif "Transmit rate" in line:
+                    connection_info['tx_rate'] = line.split(":")[1].strip()
+
+            # IP információk beszerzése
+            for iface in netifaces.interfaces():
+                addrs = netifaces.ifaddresses(iface)
+                if netifaces.AF_INET in addrs:  # Ha van IPv4 cím
+                    for addr in addrs[netifaces.AF_INET]:
+                        if 'addr' in addr and addr['addr'] != '127.0.0.1':
+                            connection_info['ip'] = addr['addr']
+                            
+            # Gateway információ
+            gws = netifaces.gateways()
+            if 'default' in gws and netifaces.AF_INET in gws['default']:
+                connection_info['gateway'] = gws['default'][netifaces.AF_INET][0]
+
+            # DNS szerverek lekérése
+            try:
+                dns_output = subprocess.check_output(["ipconfig", "/all"], encoding='utf-8')
+                dns_servers = []
+                for line in dns_output.split('\n'):
+                    if "DNS Servers" in line:
+                        dns_line = next((l for l in dns_output.split('\n')[dns_output.split('\n').index(line)+1:] if l.strip()), '')
+                        if dns_line.strip():
+                            dns_servers.append(dns_line.strip())
+                connection_info['dns'] = dns_servers
+            except:
+                connection_info['dns'] = ["Nem elérhető"]
+
+            return connection_info
+    except Exception as e:
+        print(f"Hiba az Android hotspot információk lekérése közben: {str(e)}")
+        return None
+
+def monitor_connection_quality(duration=5):
+    """Kapcsolat minőségének monitorozása megadott időtartamon keresztül"""
+    print(f"\nKapcsolat minőségének mérése ({duration} másodperc)...")
+    measurements = []
+    
+    try:
+        start_time = time.time()
+        while time.time() - start_time < duration:
+            result = subprocess.check_output(["netsh", "wlan", "show", "interfaces"], encoding='utf-8')
+            for line in result.split('\n'):
+                if "Signal" in line:
+                    signal_str = line.split(":")[1].strip().rstrip('%')
+                    if signal_str.isdigit():
+                        measurements.append(int(signal_str))
+            time.sleep(1)
+        
+        if measurements:
+            avg_signal = sum(measurements) / len(measurements)
+            min_signal = min(measurements)
+            max_signal = max(measurements)
+            
+            print("\nKapcsolat minőség statisztika:")
+            print(f"  Átlagos jelerősség: {avg_signal:.1f}%")
+            print(f"  Minimum jelerősség: {min_signal}%")
+            print(f"  Maximum jelerősség: {max_signal}%")
+            print(f"  Jelerősség ingadozás: {max_signal - min_signal}%")
+            
+            # Kapcsolat minőségének értékelése
+            if avg_signal >= 80:
+                print("  Minősítés: Kiváló kapcsolat")
+            elif avg_signal >= 60:
+                print("  Minősítés: Jó kapcsolat")
+            elif avg_signal >= 40:
+                print("  Minősítés: Közepes kapcsolat")
+            else:
+                print("  Minősítés: Gyenge kapcsolat")
+    except Exception as e:
+        print(f"Hiba a kapcsolat monitorozása közben: {str(e)}")
+
+def get_connected_device_info(target_ip):
+    try:
+        print("\nKapcsolódott eszköz információinak lekérése...")
+        nm = nmap.PortScanner()
+        
+        # Alapvető szkennelés az eszközön
+        nm.scan(hosts=target_ip, arguments='-sn')
+        
+        device_info = {
+            'ip': target_ip,
+            'hostname': None,
+            'mac': None,
+            'vendor': None,
+            'open_ports': [],
+            'status': None
+        }
+
+        if target_ip in nm.all_hosts():
+            host = nm[target_ip]
+            
+            # Részletes szkennelés
+            nm.scan(target_ip, arguments='-sS -sV -O --version-intensity 5')
+            
+            device_info.update({
+                'hostname': nm[target_ip].hostname() if 'hostname' in dir(nm[target_ip]) else 'Ismeretlen',
+                'mac': host['addresses'].get('mac', 'Ismeretlen') if 'addresses' in host else 'Ismeretlen',
+                'vendor': host.get('vendor', {}).get(device_info['mac'], 'Ismeretlen'),
+                'status': host.get('status', {}).get('state', 'Ismeretlen'),
+                'os': nm[target_ip].get('osmatch', [{'name': 'Ismeretlen'}])[0]['name']
+            })
+
+            # Nyitott portok ellenőrzése
+            if 'tcp' in nm[target_ip]:
+                for port, port_info in nm[target_ip]['tcp'].items():
+                    if port_info['state'] == 'open':
+                        service_info = f"Port {port} ({port_info.get('name', 'ismeretlen')})"
+                        if port_info.get('version'):
+                            service_info += f" - Verzió: {port_info['version']}"
+                        device_info['open_ports'].append(service_info)
+
+        return device_info
+
+    except Exception as e:
+        print(f"Hiba az eszköz információk lekérése közben: {str(e)}")
+        return None
+
+def get_device_signal_strength(target_ip):
+    try:
+        # ARP ping a késleltetés méréséhez
+        start_time = time.time()
+        response = subprocess.run(['ping', '-n', '1', target_ip], 
+                                capture_output=True, 
+                                text=True)
+        ping_time = (time.time() - start_time) * 1000  # ms-ben
+
+        # Ping válasz feldolgozása
+        if "TTL=" in response.stdout:
+            ttl = int(re.search(r"TTL=(\d+)", response.stdout).group(1))
+            
+            # Jelerősség becslése a ping időből és TTL-ből
+            if ping_time < 10:
+                signal_quality = "Kiváló"
+                estimated_strength = "90-100%"
+            elif ping_time < 50:
+                signal_quality = "Jó"
+                estimated_strength = "70-89%"
+            elif ping_time < 100:
+                signal_quality = "Közepes"
+                estimated_strength = "50-69%"
+            else:
+                signal_quality = "Gyenge"
+                estimated_strength = "< 50%"
+
+            return {
+                'ping_time': round(ping_time, 2),
+                'ttl': ttl,
+                'quality': signal_quality,
+                'estimated_strength': estimated_strength
+            }
+    except Exception as e:
+        print(f"Hiba a jelerősség mérése közben: {str(e)}")
+    return None
+
+def monitor_device_connection(target_ip, duration=10):
+    """Kapcsolat minőségének monitorozása a céleszközzel"""
+    print(f"\nKapcsolat monitorozása ({duration} másodperc)...")
+    measurements = []
+    packet_loss = 0
+    
+    try:
+        start_time = time.time()
+        while time.time() - start_time < duration:
+            response = subprocess.run(['ping', '-n', '1', target_ip], 
+                                   capture_output=True, 
+                                   text=True)
+            if "TTL=" in response.stdout:
+                ping_time = float(re.search(r"time[=<](\d+)", response.stdout).group(1))
+                measurements.append(ping_time)
+            else:
+                packet_loss += 1
+            time.sleep(1)
+        
+        if measurements:
+            avg_ping = sum(measurements) / len(measurements)
+            min_ping = min(measurements)
+            max_ping = max(measurements)
+            jitter = max_ping - min_ping
+            loss_percent = (packet_loss / duration) * 100
+            
+            print("\nKapcsolat statisztika:")
+            print(f"  Átlagos késleltetés: {avg_ping:.1f} ms")
+            print(f"  Minimum késleltetés: {min_ping:.1f} ms")
+            print(f"  Maximum késleltetés: {max_ping:.1f} ms")
+            print(f"  Jitter: {jitter:.1f} ms")
+            print(f"  Csomagvesztés: {loss_percent:.1f}%")
+            
+            # Kapcsolat minőségének értékelése
+            if avg_ping < 20 and loss_percent < 1:
+                print("  Minősítés: Kiváló kapcsolat")
+            elif avg_ping < 50 and loss_percent < 5:
+                print("  Minősítés: Jó kapcsolat")
+            elif avg_ping < 100 and loss_percent < 10:
+                print("  Minősítés: Közepes kapcsolat")
+            else:
+                print("  Minősítés: Gyenge kapcsolat")
+    except Exception as e:
+        print(f"Hiba a kapcsolat monitorozása közben: {str(e)}")
 
 async def main():
     print("Bluetooth eszközök keresése...")
@@ -209,24 +442,34 @@ async def main():
                             except Exception as e:
                                 print(f"Hiba az információk lekérése közben: {str(e)}")
                         elif command == 'signal':
-                            try:
-                                print("\nJelerősség információk:")
-                                # Próbáljuk lekérni az RSSI értéket
-                                # Megjegyzés: nem minden eszköz támogatja
-                                try:
-                                    rssi = socket.getsockopt(bluetooth.SOL_BLUETOOTH, bluetooth.SO_RXPOWER)
-                                    print(f"  RSSI: {rssi} dBm")
-                                except:
-                                    print("  RSSI érték nem elérhető")
+                            target_ip = input("\nKérem adja meg a kapcsolódott eszköz IP címét: ")
+                            print("\nEszköz információk lekérése...")
+                            
+                            device_info = get_connected_device_info(target_ip)
+                            if device_info:
+                                print("\nKapcsolódott eszköz adatai:")
+                                print(f"  IP cím: {device_info['ip']}")
+                                print(f"  Hostname: {device_info['hostname']}")
+                                print(f"  MAC cím: {device_info['mac']}")
+                                print(f"  Gyártó: {device_info['vendor']}")
+                                print(f"  Operációs rendszer: {device_info['os']}")
+                                print(f"  Állapot: {device_info['status']}")
                                 
-                                # Kapcsolat minőségének ellenőrzése
-                                try:
-                                    link_quality = socket.getsockopt(bluetooth.SOL_BLUETOOTH, bluetooth.SO_LINK_QUALITY)
-                                    print(f"  Kapcsolat minősége: {link_quality}%")
-                                except:
-                                    print("  Kapcsolat minőség nem elérhető")
-                            except Exception as e:
-                                print(f"Hiba a jelerősség lekérése közben: {str(e)}")
+                                if device_info['open_ports']:
+                                    print("\nNyitott portok:")
+                                    for port in device_info['open_ports']:
+                                        print(f"  - {port}")
+                            
+                            signal_info = get_device_signal_strength(target_ip)
+                            if signal_info:
+                                print("\nKapcsolat információk:")
+                                print(f"  Ping idő: {signal_info['ping_time']} ms")
+                                print(f"  TTL: {signal_info['ttl']}")
+                                print(f"  Kapcsolat minősége: {signal_info['quality']}")
+                                print(f"  Becsült jelerősség: {signal_info['estimated_strength']}")
+                            
+                            # Részletes kapcsolat monitorozás
+                            monitor_device_connection(target_ip)
                         elif command == 'services':
                             try:
                                 print("\nElérhető szolgáltatások keresése...")
@@ -243,7 +486,7 @@ async def main():
                             except Exception as e:
                                 print(f"Hiba a szolgáltatások lekérése közben: {str(e)}")
                         else:
-                            print("Ismeretlen parancs! Haszn��lja az alábbi parancsok egyikét:")
+                            print("Ismeretlen parancs! Használja az alábbi parancsok egyikét:")
                             print("send, receive, status, info, signal, services, exit")
                             
                 except KeyboardInterrupt:
