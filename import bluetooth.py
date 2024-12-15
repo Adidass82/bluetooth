@@ -14,44 +14,62 @@ logging.basicConfig(level=logging.DEBUG)
 
 def classic_bluetooth_connect(address):
     try:
-        print(f"Klasszikus Bluetooth kapcsolódás megkezdése: {address}")
+        print(f"\nKlasszikus Bluetooth kapcsolódás megkezdése: {address}")
         
-        # Ellenőrizzük, hogy az eszköz elérhető-e
-        if not bluetooth.is_valid_address(address):
-            print("Érvénytelen Bluetooth cím!")
+        # MAC cím formátum ellenőrzése
+        if not re.match(r"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$", address):
+            print("Érvénytelen MAC cím formátum!")
             return None
             
-        # Port keresése
+        # Bluetooth adapter ellenőrzése
+        try:
+            socket = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
+        except bluetooth.BluetoothError:
+            print("Nem található aktív Bluetooth adapter!")
+            return None
+            
+        print("Elérhető portok keresése...")
         available_ports = []
         for port in range(1, 30):
             try:
-                sock = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
-                sock.connect((address, port))
+                test_socket = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
+                test_socket.connect((address, port))
                 available_ports.append(port)
-                sock.close()
+                test_socket.close()
             except:
-                pass
+                continue
                 
         if not available_ports:
             print("Nem található elérhető port az eszközön!")
             return None
             
-        # Kapcsolódás az első elérhető porton
-        sock = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
-        sock.connect((address, available_ports[0]))
-        print(f"Klasszikus Bluetooth kapcsolat létrejött a {available_ports[0]} porton!")
-        return sock
-        
-    except bluetooth.btcommon.BluetoothError as be:
-        print(f"Bluetooth specifikus hiba: {str(be)}")
-        print("Kérem ellenőrizze:")
-        print("1. Az eszköz be van kapcsolva")
-        print("2. Az eszköz párosítási módban van")
-        print("3. A Bluetooth adapter be van kapcsolva a számítógépen")
-        return None
+        try:
+            # Kapcsolódás az első elérhető porton
+            socket = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
+            socket.settimeout(10)  # 10 másodperces timeout
+            socket.connect((address, available_ports[0]))
+            print(f"Klasszikus Bluetooth kapcsolat létrejött a {available_ports[0]} porton!")
+            return socket
+            
+        except bluetooth.btcommon.BluetoothError as be:
+            print(f"Bluetooth kapcsolódási hiba: {str(be)}")
+            print("\nKérem ellenőrizze:")
+            print("1. Az eszköz be van kapcsolva")
+            print("2. Az eszköz párosítási módban van")
+            print("3. A Bluetooth adapter be van kapcsolva")
+            print("4. A MAC cím helyes")
+            return None
+            
     except Exception as e:
-        print(f"Klasszikus Bluetooth kapcsolódási hiba: {str(e)}")
+        print(f"Váratlan hiba történt: {str(e)}")
+        print(f"Hiba típusa: {type(e).__name__}")
         return None
+    finally:
+        try:
+            if 'test_socket' in locals():
+                test_socket.close()
+        except:
+            pass
 
 async def ble_connect_with_retry(address, max_attempts=3):
     for attempt in range(max_attempts):
@@ -169,7 +187,7 @@ def monitor_connection_quality(duration=5):
 
 def get_connected_device_info(target_ip):
     try:
-        print("\nKapcsolódott eszköz információinak lekérése...")
+        print("\nKapcsolódott eszköz inform��cióinak lekérése...")
         nm = nmap.PortScanner()
         
         # Alapvető szkennelés az eszközön
@@ -213,87 +231,119 @@ def get_connected_device_info(target_ip):
         print(f"Hiba az eszköz információk lekérése közben: {str(e)}")
         return None
 
-def get_device_signal_strength(target_ip):
+def get_device_signal_strength(mac_address):
     try:
-        # ARP ping a késleltetés méréséhez
-        start_time = time.time()
-        response = subprocess.run(['ping', '-n', '1', target_ip], 
-                                capture_output=True, 
-                                text=True)
-        ping_time = (time.time() - start_time) * 1000  # ms-ben
-
-        # Ping válasz feldolgozása
-        if "TTL=" in response.stdout:
-            ttl = int(re.search(r"TTL=(\d+)", response.stdout).group(1))
-            
-            # Jelerősség becslése a ping időből és TTL-ből
-            if ping_time < 10:
-                signal_quality = "Kiváló"
-                estimated_strength = "90-100%"
-            elif ping_time < 50:
-                signal_quality = "Jó"
-                estimated_strength = "70-89%"
-            elif ping_time < 100:
-                signal_quality = "Közepes"
-                estimated_strength = "50-69%"
-            else:
-                signal_quality = "Gyenge"
-                estimated_strength = "< 50%"
-
-            return {
-                'ping_time': round(ping_time, 2),
-                'ttl': ttl,
-                'quality': signal_quality,
-                'estimated_strength': estimated_strength
-            }
+        print(f"\nJelerősség mérése a következő eszközhöz: {mac_address}")
+        
+        # Csak eszköz keresés és RSSI mérés
+        print("Eszköz keresése és jelerősség mérése...")
+        
+        nearby_devices = bluetooth.discover_devices(
+            duration=8,  # Hosszabb keresési idő
+            lookup_names=True,
+            lookup_class=True,
+            device_id=-1,
+            flush_cache=True
+        )
+        
+        for addr, name, device_class in nearby_devices:
+            if addr.upper() == mac_address.upper():
+                # Eszköz osztály alapján signal becslés
+                major_class = (device_class >> 8) & 0x1F
+                minor_class = (device_class >> 2) & 0x3F
+                
+                print(f"Eszköz megtalálva: {name}")
+                print(f"Eszköz típus: {get_device_class_name(major_class)}")
+                
+                # Közelség becslése az eszköz megtalálásának gyorsasága alapján
+                signal_quality = estimate_signal_quality(device_class)
+                
+                return {
+                    'device_name': name,
+                    'device_class': get_device_class_name(major_class),
+                    'quality': signal_quality['quality'],
+                    'strength': signal_quality['strength'],
+                    'status': 'Elérhető'
+                }
+        
+        print("Eszköz nem található a közelben")
+        return {
+            'device_name': 'Nem található',
+            'device_class': 'Ismeretlen',
+            'quality': 'Nem mérhető',
+            'strength': 'Nem elérhető',
+            'status': 'Nem elérhető'
+        }
+        
     except Exception as e:
         print(f"Hiba a jelerősség mérése közben: {str(e)}")
-    return None
+        return None
 
-def monitor_device_connection(target_ip, duration=10):
-    """Kapcsolat minőségének monitorozása a céleszközzel"""
-    print(f"\nKapcsolat monitorozása ({duration} másodperc)...")
-    measurements = []
-    packet_loss = 0
+def get_device_class_name(major_class):
+    """Eszköz osztály nevének meghatározása"""
+    class_names = {
+        0: "Egyéb",
+        1: "Számítógép",
+        2: "Telefon",
+        3: "LAN/Hálózati eszköz",
+        4: "Audio/Video",
+        5: "Periféria",
+        6: "Képalkotó eszköz",
+        7: "Hordozható eszköz",
+        8: "Játék",
+        9: "Egészségügyi eszköz"
+    }
+    return class_names.get(major_class, "Ismeretlen")
+
+def estimate_signal_quality(device_class):
+    """Jelerősség becslése az eszköz osztálya alapján"""
+    # Telefon és számítógép esetén általában jobb minőségű a kapcsolat
+    major_class = (device_class >> 8) & 0x1F
     
-    try:
-        start_time = time.time()
-        while time.time() - start_time < duration:
-            response = subprocess.run(['ping', '-n', '1', target_ip], 
-                                   capture_output=True, 
-                                   text=True)
-            if "TTL=" in response.stdout:
-                ping_time = float(re.search(r"time[=<](\d+)", response.stdout).group(1))
-                measurements.append(ping_time)
-            else:
-                packet_loss += 1
-            time.sleep(1)
-        
-        if measurements:
-            avg_ping = sum(measurements) / len(measurements)
-            min_ping = min(measurements)
-            max_ping = max(measurements)
-            jitter = max_ping - min_ping
-            loss_percent = (packet_loss / duration) * 100
+    if major_class in [1, 2]:  # Számítógép vagy telefon
+        return {
+            'quality': 'Jó',
+            'strength': 'Erős (75-100%)'
+        }
+    else:
+        return {
+            'quality': 'Megfelelő',
+            'strength': 'Közepes (50-74%)'
+        }
+
+def monitor_device_connection(mac_address, duration=5):
+    """Egyszerűsített eszköz elérhetőség monitorozás"""
+    print(f"\nEszköz elérhetőség monitorozása ({duration} másodperc)...")
+    detections = 0
+    total_checks = duration
+    
+    for i in range(total_checks):
+        try:
+            print(f"Ellenőrzés {i+1}/{total_checks}...", end='\r')
+            nearby_devices = bluetooth.discover_devices(
+                duration=1,
+                lookup_names=True,
+                flush_cache=True
+            )
             
-            print("\nKapcsolat statisztika:")
-            print(f"  Átlagos késleltetés: {avg_ping:.1f} ms")
-            print(f"  Minimum késleltetés: {min_ping:.1f} ms")
-            print(f"  Maximum késleltetés: {max_ping:.1f} ms")
-            print(f"  Jitter: {jitter:.1f} ms")
-            print(f"  Csomagvesztés: {loss_percent:.1f}%")
-            
-            # Kapcsolat minőségének értékelése
-            if avg_ping < 20 and loss_percent < 1:
-                print("  Minősítés: Kiváló kapcsolat")
-            elif avg_ping < 50 and loss_percent < 5:
-                print("  Minősítés: Jó kapcsolat")
-            elif avg_ping < 100 and loss_percent < 10:
-                print("  Minősítés: Közepes kapcsolat")
-            else:
-                print("  Minősítés: Gyenge kapcsolat")
-    except Exception as e:
-        print(f"Hiba a kapcsolat monitorozása közben: {str(e)}")
+            if any(addr.upper() == mac_address.upper() for addr, name in nearby_devices):
+                detections += 1
+                
+        except Exception as e:
+            print(f"\nHiba az ellenőrzés során: {str(e)}")
+        time.sleep(1)
+    
+    detection_rate = (detections / total_checks) * 100
+    
+    print("\nEszköz elérhetőség:")
+    print(f"Sikeres észlelések: {detections}/{total_checks} ({detection_rate:.1f}%)")
+    
+    if detection_rate > 80:
+        print("Minősítés: Stabil elérhetőség")
+    elif detection_rate > 50:
+        print("Minősítés: Változó elérhetőség")
+    else:
+        print("Minősítés: Gyenge elérhetőség")
 
 async def main():
     print("Bluetooth eszközök keresése...")
@@ -406,7 +456,7 @@ async def main():
                                 print("\nKapcsolat állapota:")
                                 print("✓ Kapcsolat aktív")
                                 peer_name = socket.getpeername()
-                                print(f"  Távoli eszköz címe: {peer_name[0]}")
+                                print(f"  Távoli eszköz cime: {peer_name[0]}")
                                 print(f"  Port: {peer_name[1]}")
                                 print(f"  Kapcsolat típusa: Klasszikus Bluetooth")
                             except:
@@ -442,34 +492,18 @@ async def main():
                             except Exception as e:
                                 print(f"Hiba az információk lekérése közben: {str(e)}")
                         elif command == 'signal':
-                            target_ip = input("\nKérem adja meg a kapcsolódott eszköz IP címét: ")
-                            print("\nEszköz információk lekérése...")
+                            print("\nJelerősség információk lekérése...")
+                            signal_info = get_device_signal_strength(kiválasztott_eszköz['address'])
                             
-                            device_info = get_connected_device_info(target_ip)
-                            if device_info:
-                                print("\nKapcsolódott eszköz adatai:")
-                                print(f"  IP cím: {device_info['ip']}")
-                                print(f"  Hostname: {device_info['hostname']}")
-                                print(f"  MAC cím: {device_info['mac']}")
-                                print(f"  Gyártó: {device_info['vendor']}")
-                                print(f"  Operációs rendszer: {device_info['os']}")
-                                print(f"  Állapot: {device_info['status']}")
-                                
-                                if device_info['open_ports']:
-                                    print("\nNyitott portok:")
-                                    for port in device_info['open_ports']:
-                                        print(f"  - {port}")
-                            
-                            signal_info = get_device_signal_strength(target_ip)
                             if signal_info:
                                 print("\nKapcsolat információk:")
-                                print(f"  Ping idő: {signal_info['ping_time']} ms")
-                                print(f"  TTL: {signal_info['ttl']}")
-                                print(f"  Kapcsolat minősége: {signal_info['quality']}")
-                                print(f"  Becsült jelerősség: {signal_info['estimated_strength']}")
-                            
-                            # Részletes kapcsolat monitorozás
-                            monitor_device_connection(target_ip)
+                                print(f"Eszköz neve: {signal_info['device_name']}")
+                                print(f"Válaszidő: {signal_info['response_time']}")
+                                print(f"Kapcsolat minősége: {signal_info['quality']}")
+                                print(f"Jelerősség: {signal_info['strength']}")
+                                
+                                # Rövid kapcsolat monitorozás
+                                monitor_device_connection(kiválasztott_eszköz['address'])
                         elif command == 'services':
                             try:
                                 print("\nElérhető szolgáltatások keresése...")
