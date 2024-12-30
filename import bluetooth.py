@@ -1,3 +1,5 @@
+from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QPushButton, QListWidget, QLabel, QWidget, QMessageBox
+from PyQt5.QtCore import Qt
 from bleak import BleakScanner, BleakClient
 import asyncio
 import logging
@@ -46,7 +48,7 @@ def classic_bluetooth_connect(address):
         try:
             # Kapcsolódás az első elérhető porton
             socket = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
-            socket.settimeout(10)  # 10 másodperces timeout
+            socket.settimeout(5)  # 10 másodperces timeout
             socket.connect((address, available_ports[0]))
             print(f"Klasszikus Bluetooth kapcsolat létrejött a {available_ports[0]} porton!")
             return socket
@@ -86,28 +88,6 @@ async def ble_connect_with_retry(address, max_attempts=3):
     return None
 
 def get_android_hotspot_info():
-    """
-    Részletes információk lekérése a csatlakoztatott Android hotspotról.
-
- Ez a funkció különféle részleteket gyűjt össze, például SSID-t, jelerősséget,
- IP-cím, átjáró, DNS-kiszolgálók, frekvencia és átviteli sebesség
- csatlakoztatott Android hotspothoz Windows rendszeren.
-
- Visszaküldések:
- dict: A következő kulcsokat tartalmazó szótár:
- - 'ssid' (str): A csatlakoztatott hálózat SSID-je.
- - 'signal' (int): A jelerősség százalékban.
- - 'ip' (str): Az eszközhöz rendelt IP-cím.
- - 'gateway' (str): Az alapértelmezett átjáró IP-címe.
- - 'dns' (str listája): DNS szerver címek listája.
- - 'frekvencia' (str): A Wi-Fi kapcsolat frekvenciája.
- - 'tx_rate' (str): Az átviteli sebesség.
- - 'rx_rate' (str): A vételi sebesség.
-
- Ha hiba történik az információ visszakeresése során, akkor a Nincs értéket adja vissza
- és hibaüzenetet nyomtat.
-    """
-
     try:
         # Windows esetén
         if platform.system() == "Windows":
@@ -561,5 +541,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
