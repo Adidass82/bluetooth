@@ -1,5 +1,3 @@
-from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QPushButton, QListWidget, QLabel, QWidget, QMessageBox
-from PyQt5.QtCore import Qt
 from bleak import BleakScanner, BleakClient
 import asyncio
 import logging
@@ -11,8 +9,52 @@ import re
 import time
 import netifaces  # pip install netifaces
 import nmap  # pip install python-nmap
+import lightblue
 
 logging.basicConfig(level=logging.DEBUG)
+
+def lightblue_connect(address):
+    try:
+        print(f"\nLightblue kapcsolódás megkezdése: {address}")
+        
+        # MAC cím formátum ellenőrzése
+        if not re.match(r"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$", address):
+            print("Érvénytelen MAC cím formátum!")
+            return None
+            
+        # Bluetooth adapter ellenőrzése
+        try:
+            lightblue.finddevices()
+        except lightblue.BluetoothError:
+            print("Nem található aktív Bluetooth adapter!")
+            return None
+            
+        print("Szolgáltatások keresése...")
+        services = lightblue.findservices(address)
+        
+        if not services:
+            print("Nem található szolgáltatás az eszközön!")
+            return None
+            
+        try:
+            # Kapcsolódás az első szolgáltatáshoz
+            socket = lightblue.socket()
+            socket.settimeout(15)  # 15 másodperces timeout
+            socket.connect((address, services[0][0]))
+            print(f"Lightblue kapcsolat létrejött a {services[0][0]} porton!")
+            return socket
+            
+        except lightblue.BluetoothError as be:
+            print(f"Lightblue kapcsolódási hiba: {str(be)}")
+            print("\nKérem ellenőrizze:")
+            print("1. Az eszköz be van kapcsolva")
+            print("2. Az eszköz párosítási módban van")
+            print("3. A Bluetooth adapter be van kapcsolva")
+            print("4. A MAC cím helyes")
+            
+            return None
+
+
 
 def classic_bluetooth_connect(address):
     try:
@@ -48,7 +90,7 @@ def classic_bluetooth_connect(address):
         try:
             # Kapcsolódás az első elérhető porton
             socket = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
-            socket.settimeout(5)  # 10 másodperces timeout
+            socket.settimeout(15)  # 15 másodperces timeout
             socket.connect((address, available_ports[0]))
             print(f"Klasszikus Bluetooth kapcsolat létrejött a {available_ports[0]} porton!")
             return socket
@@ -77,8 +119,8 @@ async def ble_connect_with_retry(address, max_attempts=3):
     for attempt in range(max_attempts):
         try:
             print(f"\nBLE Csatlakozási kísérlet {attempt + 1}/{max_attempts}")
-            client = BleakClient(address, timeout=20.0)
-            await client.connect(timeout=20.0)
+            client = BleakClient(address, timeout=10.0)
+            await client.connect(timeout=10.0)
             return client
         except Exception as e:
             print(f"BLE Kísérlet {attempt + 1} sikertelen: {str(e)}")
@@ -354,7 +396,7 @@ async def main():
     try:
         # BLE eszközök keresése
         print("\nBLE eszközök keresése...")
-        ble_devices = await BleakScanner.discover(timeout=10.0)
+        ble_devices = await BleakScanner.discover(timeout=15.0)
         
         # Klasszikus Bluetooth eszközök keresése
         print("\nKlasszikus Bluetooth eszközök keresése...")
